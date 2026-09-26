@@ -1,6 +1,6 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {segmentJapanese,displayDelay,cropRect,normalizeOcrText,mergeOcrText} from './segment.mjs';
+import {segmentJapanese,segmentPhrases,pivotIndex,displayDelay,cropRect,normalizeOcrText,mergeOcrText,rubyBands} from './segment.mjs';
 test('preserves Japanese text, punctuation and supplementary characters',()=>{
  for(const text of ['今日は晴れです。明日はどうでしょう？','「物語」を読む。𠮷野家と🍵。','長い文章を少しずつ読み進めるために、画面に表示します。']){
   const cards=segmentJapanese(text,8);assert.equal(cards.join(''),text);assert.ok(cards.every(c=>! /^[、。！？]/.test(c)));
@@ -27,4 +27,27 @@ test('OCR results are appended to existing text unless replacing is chosen',()=>
  assert.equal(mergeOcrText('前の文章','新しい文章',false),'新しい文章');
  assert.equal(mergeOcrText('','新しい文章'),'新しい文章');
  assert.equal(mergeOcrText('前の文章',''),'前の文章');
+});
+test('RSVP phrases group a content word with its particles and keep all text',()=>{
+ assert.deepEqual(segmentPhrases('私は本を読むのが好きです。'),['私は','本を','読むのが','好きです。']);
+ assert.deepEqual(segmentPhrases('酒をぶらさげたり陽気になりますが、これは嘘です。').slice(0,4),['酒を','ぶらさげたり','陽気に','なりますが、']);
+ for(const text of ['「なぜ嘘か」と申しますと、江戸時代からの話で、スマートフォンを見ていた。','恥の多い生涯を送って来ました。\n\n自分には、見当つかないのです。']){
+  const phrases=segmentPhrases(text);
+  assert.equal(phrases.join(''),text.replace(/\s/g,''));
+  assert.ok(phrases.every(p=>[...p].length<=10&&!/^[、。」]/.test(p)));
+ }
+});
+test('RSVP fixation point skips brackets and trailing punctuation',()=>{
+ assert.equal(pivotIndex('私は'),0);
+ assert.equal(pivotIndex('読むのが'),1);
+ assert.equal(pivotIndex('「なぜ'),1);
+ assert.equal(pivotIndex('好きです。'),1);
+ assert.equal(pivotIndex('江戸時代からの'),2);
+});
+test('ruby bands are narrow and faint compared with body lines',()=>{
+ const profile=[],band=(size,perPixel)=>{for(let i=0;i<size;i++)profile.push(perPixel);profile.push(0,0,0);};
+ band(30,250);band(16,15);band(30,240);band(4,40);band(30,260);band(30,230);band(17,12);
+ const found=rubyBands(profile).map(b=>b.size);
+ assert.deepEqual(found,[16,17]);
+ assert.deepEqual(rubyBands([...Array(30).fill(250),0,0,...Array(16).fill(15)]),[]);
 });

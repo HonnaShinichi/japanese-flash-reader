@@ -82,8 +82,8 @@ async function nextPage({tabId, windowId, key}) {
     }});
     // captureVisibleTab allows two calls per second.
     let last = before;
-    for (let i = 0; i < 8; i++) {
-      await sleep(600);
+    for (let i = 0; i < 9; i++) {
+      await sleep(500);
       const image = await capture();
       if (image !== before && image === last) return {key: await save(image)};
       last = image;

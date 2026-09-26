@@ -1,4 +1,4 @@
-import {segmentJapanese, displayDelay, cropRect, normalizeOcrText, mergeOcrText} from './segment.mjs';
+import {segmentJapanese, segmentPhrases, pivotIndex, displayDelay, cropRect, normalizeOcrText, mergeOcrText, rubyBands} from './segment.mjs';
 const $ = id => document.getElementById(id);
 let cards = [], index = 0, timer = null, playing = false;
 let bitmap = null, crop = null, anchor = null, busy = false;
@@ -8,9 +8,18 @@ const canvas = $('capture'), ctx = canvas.getContext('2d');
 canvas.hidden = true;
 function status(message) { $('status').textContent = message; }
 function speed() { return Math.min(2400, Math.max(120, Number($('speed').value) || 600)); }
+const rsvp = () => $('mode').value === 'rsvp';
+const segment = text => rsvp() ? segmentPhrases(text) : segmentJapanese(text, $('length').value);
+function span(className, text) { const e = document.createElement('span'); e.className = className; e.textContent = text; return e; }
 function render() {
-  $('card').textContent = cards[index] || '読み始めましょう';
-  $('context').textContent = cards.length ? cards.slice(Math.max(0,index-2),index).join('') : '文章を取り込んで「反映」を押してください';
+  const card = cards[index];
+  $('card').classList.toggle('rsvp', rsvp() && Boolean(card));
+  if (rsvp() && card) {
+    // Keep the fixation point at the same spot so the eyes do not move.
+    const chars = [...card], p = pivotIndex(card);
+    $('card').replaceChildren(span('before', chars.slice(0,p).join('')), span('pivot', chars[p]), span('after', chars.slice(p+1).join('')));
+  } else $('card').textContent = card || '読み始めましょう';
+  $('context').textContent = rsvp() ? '' : cards.length ? cards.slice(Math.max(0,index-2),index).join('') : '文章を取り込んで「反映」を押してください';
   $('progressText').textContent = cards.length ? `${index+1} / ${cards.length}` : '0 / 0';
   $('position').max = Math.max(0,cards.length-1); $('position').value = index;
   $('play').textContent = playing ? '停止' : '再生';
@@ -25,29 +34,38 @@ function tick() {
   }, displayDelay(cards[index],speed()));
 }
 function apply() {
-  stop(); cards = segmentJapanese($('source').value, $('length').value); index=0; render();
+  stop(); cards = segment($('source').value); index=0; render();
   status(cards.length ? `${cards.length}枚に区切りました。再生で開始します。` : '読む文章を入力してください。');
 }
 // Adds text to the source. When continuing to a new page, playback resumes at the first new card.
 function addText(text, continuing) {
-  const current=$('source').value, before=segmentJapanese(current,$('length').value), appended=$('append').checked&&Boolean(current.trim());
+  const current=$('source').value, before=segment(current), appended=$('append').checked&&Boolean(current.trim());
   $('source').value=mergeOcrText(current,text,$('append').checked);apply();
   if(continuing&&appended){let i=0;while(i<before.length&&before[i]===cards[i])i++;index=Math.min(i,Math.max(0,cards.length-1));render();}
   return appended;
 }
-const LOCKED=['ocr','clear','imageFile','resetCrop','direction','append','nextPage'];
+const LOCKED=['ocr','clear','imageFile','resetCrop','direction','append','ruby','nextPage'];
 function lock(on){busy=on;LOCKED.forEach(id=>$(id).disabled=on);if(!on)$('ocr').disabled=!bitmap;}
 $('apply').onclick=apply;
 $('play').onclick=() => { if (!cards.length) apply(); if (!cards.length) return; playing=!playing; tick(); };
 $('prev').onclick=()=>{stop();index=Math.max(0,index-1);render();};
 $('next').onclick=()=>{stop();index=Math.min(Math.max(0,cards.length-1),index+1);render();};
 $('restart').onclick=()=>{stop();index=0;render();};
-$('position').oninput=()=>{stop();index=Number($('position').value);render();};
+$('position').oninput=()=>{const next=Number($('position').value);stop();index=next;render();};
 function saveSettings() {
-  chrome.storage.local.set({settings:{speed:speed(),length:$('length').value,font:$('font').value,direction:$('direction').value}}).catch(()=>{});
+  chrome.storage.local.set({settings:{speed:speed(),length:$('length').value,font:$('font').value,direction:$('direction').value,mode:$('mode').value,ruby:$('ruby').checked}}).catch(()=>{});
+}
+// Re-splits the text for the current mode, keeping the reading position.
+function resegment() {
+  const size=card=>card.replace(/\s/gu,'').length, offset=size(cards.slice(0,index).join(''));
+  stop();cards=segment($('source').value);index=0;
+  for(let n=0;index<cards.length-1&&n+size(cards[index])<=offset;index++)n+=size(cards[index]);
+  $('length').disabled=rsvp();render();
 }
 $('speed').onchange=()=>{$('speed').value=speed();saveSettings();tick();};
-$('length').onchange=()=>{saveSettings();apply();};
+$('length').onchange=()=>{saveSettings();resegment();};
+$('mode').onchange=()=>{saveSettings();resegment();};
+$('ruby').onchange=saveSettings;
 $('font').oninput=()=>{$('card').style.fontSize=$('font').value+'px';saveSettings();};
 $('direction').onchange=saveSettings;
 $('sample').onclick=()=>{$('source').value='雨上がりの道を歩くと、木々の葉に小さな水滴が残っていました。立ち止まって眺めるうちに、いつもの景色にも新しい発見があることに気づきました。読む速さを調整しながら、自分に合うリズムを探してみましょう。';apply();};
@@ -85,33 +103,44 @@ canvas.onpointerup=()=>{anchor=null;};canvas.onpointercancel=()=>{anchor=null;};
 $('resetCrop').onclick=()=>{if(bitmap&&!busy){crop={x:0,y:0,width:bitmap.width,height:bitmap.height};draw();}};
 $('imageFile').onchange=async()=>{try{if($('imageFile').files[0]){await loadImage($('imageFile').files[0]);status('本文を囲んでOCRを実行してください。');}}catch(e){status(e.message);}};
 $('clear').onclick=()=>{stop();cards=[];index=0;$('source').value='';bitmap?.close();bitmap=null;crop=null;regions=[];freshPage=true;canvas.width=0;canvas.height=0;canvas.hidden=true;$('noImage').hidden=false;$('ocr').disabled=true;$('imageFile').value='';render();status('文章と画像を消去しました。');};
+// Whitens ruby beside the body lines: to the right of columns in vertical writing, above rows in horizontal writing.
+function eraseRuby(area, vertical) {
+  const g=area.getContext('2d'), {data,width,height}=g.getImageData(0,0,area.width,area.height), profile=new Uint32Array(vertical?width:height);
+  for(let y=0;y<height;y++)for(let x=0;x<width;x++){const i=(y*width+x)*4;if(data[i]*.3+data[i+1]*.59+data[i+2]*.11<140)profile[vertical?x:y]++;}
+  g.fillStyle='#fff';
+  for(const b of rubyBands(profile))vertical?g.fillRect(b.start,0,b.size,height):g.fillRect(0,b.start,width,b.size);
+}
 // Reads the areas in order and adds the text. Returns whether any text was read.
 async function recognize(rects, continuing=false) {
   lock(true);stop();
-  let worker;
+  let workers=[];
   try {
     status('日本語OCRを準備しています…');
     const vertical=$('direction').value==='vertical';
-    worker=await Tesseract.createWorker(vertical?'jpn_vert':'jpn',1,{
+    const areas=rects.map(r=>{
+      const area=document.createElement('canvas');area.width=Math.round(r.width);area.height=Math.round(r.height);
+      area.getContext('2d',{willReadFrequently:true}).drawImage(bitmap,r.x,r.y,r.width,r.height,0,0,area.width,area.height);
+      if($('ruby').checked)eraseRuby(area,vertical);
+      return area;
+    });
+    // Two workers read both pages of a spread at the same time.
+    const count=Math.min(rects.length,navigator.hardwareConcurrency>1?2:1);
+    workers=await Promise.all(Array.from({length:count},(_,k)=>Tesseract.createWorker(vertical?'jpn_vert':'jpn',1,{
       workerPath:chrome.runtime.getURL('vendor/worker.min.js'),
       corePath:chrome.runtime.getURL('vendor/core'),
       langPath:chrome.runtime.getURL('vendor/lang'),workerBlobURL:false,
-      logger:m=>status(`OCR: ${m.status} ${Math.round((m.progress||0)*100)}%`)
-    });
-    await worker.setParameters({tessedit_pageseg_mode:vertical?'5':'6',preserve_interword_spaces:'0'});
-    let text='';
-    for(const r of rects){
-      const area=document.createElement('canvas');area.width=Math.round(r.width);area.height=Math.round(r.height);
-      area.getContext('2d').drawImage(bitmap,r.x,r.y,r.width,r.height,0,0,area.width,area.height);
-      const {data}=await worker.recognize(area);
-      text=mergeOcrText(text,normalizeOcrText(data.text));
-    }
+      logger:m=>{if(!k)status(`OCR: ${m.status} ${Math.round((m.progress||0)*100)}%`);}
+    })));
+    await Promise.all(workers.map(w=>w.setParameters({tessedit_pageseg_mode:vertical?'5':'6',preserve_interword_spaces:'0'})));
+    const texts=[];
+    await Promise.all(workers.map(async(w,k)=>{for(let i=k;i<areas.length;i+=count)texts[i]=normalizeOcrText((await w.recognize(areas[i])).data.text);}));
+    const text=texts.reduce((all,t)=>mergeOcrText(all,t),'');
     if(!text){status('文字を読み取れませんでした。範囲や組み方向を調整してください。');return false;}
     const appended=addText(text,continuing);
     status(continuing&&appended?`次のページを読み取り、末尾に追記しました（${rects.length}か所）。再生で続きから読めます。`:`${appended?'読み取り結果を末尾に追記しました':'読み取り完了'}。誤字や読み順を確認し、修正後に「文章を反映」を押してください。`);
     return true;
   } catch(e) {status(`OCRに失敗しました: ${e.message}。再試行、または文章を貼り付けてください。`);return false;}
-  finally {if(worker)await worker.terminate().catch(()=>{});lock(false);}
+  finally {await Promise.all(workers.map(w=>w.terminate().catch(()=>{})));lock(false);}
 }
 $('ocr').onclick=async()=>{
   if(busy||!bitmap)return;
@@ -152,7 +181,7 @@ async function init(){
   try {
     tabId=(await chrome.tabs.getCurrent())?.id;
     const {settings}=await chrome.storage.local.get('settings');
-    if(settings){for(const id of ['speed','length','font','direction'])if(settings[id]!=null)$(id).value=settings[id];$('card').style.fontSize=$('font').value+'px';}
+    if(settings){for(const id of ['speed','length','font','direction','mode'])if(settings[id]!=null)$(id).value=settings[id];if(settings.ruby!=null)$('ruby').checked=settings.ruby;$('card').style.fontSize=$('font').value+'px';$('length').disabled=rsvp();}
     const key=location.hash.slice(1);
     if(key){history.replaceState(null,'',location.pathname);await receive(key);}
     else status('文章を貼り付けるか、画像を開いてください。');
