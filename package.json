@@ -1,6 +1,6 @@
 {
   "name": "japanese-flash-reader",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "private": true,
   "description": "Local Japanese screen OCR and flash reading for Chrome and Edge",
   "type": "module",
