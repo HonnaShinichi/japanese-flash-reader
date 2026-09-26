@@ -1,0 +1,11 @@
+{
+  "manifest_version": 3,
+  "name": "Japanese Flash Reader",
+  "version": "0.2.0",
+  "description": "表示中の画面・選択文章を、端末内の日本語OCRとフラッシュ表示で読みます。",
+  "permissions": ["activeTab", "scripting", "storage"],
+  "action": {"default_title": "この画面をフラッシュリーダーで開く"},
+  "background": {"service_worker": "background.js"},
+  "content_security_policy": {"extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'; connect-src 'self' data:; worker-src 'self'"},
+  "commands": {"open-reader": {"suggested_key": {"default": "Alt+Shift+Y", "mac": "Alt+Shift+Y"}, "description": "表示中の画面を取り込む"}}
+}

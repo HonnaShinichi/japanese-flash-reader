@@ -1,0 +1,20 @@
+{
+  "name": "japanese-flash-reader",
+  "version": "0.2.0",
+  "private": true,
+  "description": "Local Japanese screen OCR and flash reading for Chrome and Edge",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "node build.mjs",
+    "test": "node --test segment.test.mjs"
+  },
+  "dependencies": {
+    "tesseract.js": "6.0.1",
+    "@tesseract.js-data/jpn": "1.0.0",
+    "@tesseract.js-data/jpn_vert": "1.0.0"
+  }
+}
