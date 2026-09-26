@@ -1,7 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Japanese Flash Reader",
-  "version": "0.2.1",
+  "version": "0.3.0",
+  "minimum_chrome_version": "116",
   "description": "表示中の画面・選択文章を、端末内の日本語OCRとフラッシュ表示で読みます。",
   "permissions": ["activeTab", "scripting", "storage"],
   "action": {"default_title": "この画面をフラッシュリーダーで開く"},

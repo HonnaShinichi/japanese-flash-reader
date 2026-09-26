@@ -2,6 +2,8 @@ import {segmentJapanese, displayDelay, cropRect, normalizeOcrText, mergeOcrText}
 const $ = id => document.getElementById(id);
 let cards = [], index = 0, timer = null, playing = false;
 let bitmap = null, crop = null, anchor = null, busy = false;
+// source: the e-book tab that "次のページ" turns. regions: areas OCR'd by hand, read again on the next page.
+let source = null, regions = [], freshPage = true, tabId = null;
 const canvas = $('capture'), ctx = canvas.getContext('2d');
 canvas.hidden = true;
 function status(message) { $('status').textContent = message; }
@@ -18,7 +20,7 @@ function tick() {
   clearTimeout(timer); render();
   if (!playing || !cards.length) return;
   timer = setTimeout(() => {
-    if (index >= cards.length-1) { stop(); status('最後まで読みました。'); }
+    if (index >= cards.length-1) { stop(); status(source ? '最後まで読みました。「次のページを取り込む」で続きを読み込めます。' : '最後まで読みました。'); }
     else { index++; tick(); }
   }, displayDelay(cards[index],speed()));
 }
@@ -26,6 +28,15 @@ function apply() {
   stop(); cards = segmentJapanese($('source').value, $('length').value); index=0; render();
   status(cards.length ? `${cards.length}枚に区切りました。再生で開始します。` : '読む文章を入力してください。');
 }
+// Adds text to the source. When continuing to a new page, playback resumes at the first new card.
+function addText(text, continuing) {
+  const current=$('source').value, before=segmentJapanese(current,$('length').value), appended=$('append').checked&&Boolean(current.trim());
+  $('source').value=mergeOcrText(current,text,$('append').checked);apply();
+  if(continuing&&appended){let i=0;while(i<before.length&&before[i]===cards[i])i++;index=Math.min(i,Math.max(0,cards.length-1));render();}
+  return appended;
+}
+const LOCKED=['ocr','clear','imageFile','resetCrop','direction','append','nextPage'];
+function lock(on){busy=on;LOCKED.forEach(id=>$(id).disabled=on);if(!on)$('ocr').disabled=!bitmap;}
 $('apply').onclick=apply;
 $('play').onclick=() => { if (!cards.length) apply(); if (!cards.length) return; playing=!playing; tick(); };
 $('prev').onclick=()=>{stop();index=Math.max(0,index-1);render();};
@@ -58,12 +69,14 @@ function draw() {
     ctx.strokeStyle='#81b833';ctx.lineWidth=Math.max(2,canvas.width/450);ctx.strokeRect(crop.x,crop.y,crop.width,crop.height);
   }
 }
-async function loadImage(blob) {
+async function loadImage(blob, keepCrop=false) {
   if (blob.size>25*1024*1024) throw new Error('画像は25MB以下にしてください。');
   const next = await createImageBitmap(blob);
   if (next.width*next.height>40000000) {next.close();throw new Error('画像を4000万画素以下に縮小してください。');}
+  const sameSize=keepCrop&&bitmap&&bitmap.width===next.width&&bitmap.height===next.height;
   bitmap?.close();bitmap=next;canvas.width=bitmap.width;canvas.height=bitmap.height;
-  crop={x:0,y:0,width:bitmap.width,height:bitmap.height};canvas.hidden=false;$('noImage').hidden=true;$('ocr').disabled=false;draw();
+  if(!sameSize){crop={x:0,y:0,width:bitmap.width,height:bitmap.height};regions=[];}
+  freshPage=true;canvas.hidden=false;$('noImage').hidden=true;$('ocr').disabled=busy;draw();
 }
 function point(e) { const r=canvas.getBoundingClientRect();return {x:(e.clientX-r.left)*canvas.width/r.width,y:(e.clientY-r.top)*canvas.height/r.height}; }
 canvas.onpointerdown=e=>{if(!bitmap||busy)return;anchor=point(e);canvas.setPointerCapture(e.pointerId);crop=cropRect(anchor,anchor,canvas.width,canvas.height);draw();};
@@ -71,16 +84,12 @@ canvas.onpointermove=e=>{if(!anchor)return;crop=cropRect(anchor,point(e),canvas.
 canvas.onpointerup=()=>{anchor=null;};canvas.onpointercancel=()=>{anchor=null;};
 $('resetCrop').onclick=()=>{if(bitmap&&!busy){crop={x:0,y:0,width:bitmap.width,height:bitmap.height};draw();}};
 $('imageFile').onchange=async()=>{try{if($('imageFile').files[0]){await loadImage($('imageFile').files[0]);status('本文を囲んでOCRを実行してください。');}}catch(e){status(e.message);}};
-$('clear').onclick=()=>{stop();cards=[];index=0;$('source').value='';bitmap?.close();bitmap=null;crop=null;canvas.width=0;canvas.height=0;canvas.hidden=true;$('noImage').hidden=false;$('ocr').disabled=true;$('imageFile').value='';render();status('文章と画像を消去しました。');};
-$('ocr').onclick=async()=>{
-  if(busy||!bitmap)return;
-  if(!crop||crop.width<12||crop.height<12){status('本文を含む広さで範囲を選択してください。');return;}
-  busy=true;stop();
-  const locked=['ocr','clear','imageFile','resetCrop','direction','append'];locked.forEach(id=>$(id).disabled=true);
+$('clear').onclick=()=>{stop();cards=[];index=0;$('source').value='';bitmap?.close();bitmap=null;crop=null;regions=[];freshPage=true;canvas.width=0;canvas.height=0;canvas.hidden=true;$('noImage').hidden=false;$('ocr').disabled=true;$('imageFile').value='';render();status('文章と画像を消去しました。');};
+// Reads the areas in order and adds the text. Returns whether any text was read.
+async function recognize(rects, continuing=false) {
+  lock(true);stop();
   let worker;
   try {
-    const area=document.createElement('canvas');area.width=Math.round(crop.width);area.height=Math.round(crop.height);
-    area.getContext('2d').drawImage(bitmap,crop.x,crop.y,crop.width,crop.height,0,0,area.width,area.height);
     status('日本語OCRを準備しています…');
     const vertical=$('direction').value==='vertical';
     worker=await Tesseract.createWorker(vertical?'jpn_vert':'jpn',1,{
@@ -90,28 +99,63 @@ $('ocr').onclick=async()=>{
       logger:m=>status(`OCR: ${m.status} ${Math.round((m.progress||0)*100)}%`)
     });
     await worker.setParameters({tessedit_pageseg_mode:vertical?'5':'6',preserve_interword_spaces:'0'});
-    const {data}=await worker.recognize(area);
-    const text=normalizeOcrText(data.text), appended=Boolean(text&&$('append').checked&&$('source').value.trim());
-    $('source').value=mergeOcrText($('source').value,text,$('append').checked);
-    if(text)apply();
-    status(text?`${appended?'読み取り結果を末尾に追記しました':'読み取り完了'}。誤字や読み順を確認し、修正後に「文章を反映」を押してください。`:'文字を読み取れませんでした。範囲や組み方向を調整してください。');
-  } catch(e) {status(`OCRに失敗しました: ${e.message}。再試行、または文章を貼り付けてください。`);}
-  finally {if(worker)await worker.terminate().catch(()=>{});busy=false;locked.forEach(id=>$(id).disabled=false);$('ocr').disabled=!bitmap;}
+    let text='';
+    for(const r of rects){
+      const area=document.createElement('canvas');area.width=Math.round(r.width);area.height=Math.round(r.height);
+      area.getContext('2d').drawImage(bitmap,r.x,r.y,r.width,r.height,0,0,area.width,area.height);
+      const {data}=await worker.recognize(area);
+      text=mergeOcrText(text,normalizeOcrText(data.text));
+    }
+    if(!text){status('文字を読み取れませんでした。範囲や組み方向を調整してください。');return false;}
+    const appended=addText(text,continuing);
+    status(continuing&&appended?`次のページを読み取り、末尾に追記しました（${rects.length}か所）。再生で続きから読めます。`:`${appended?'読み取り結果を末尾に追記しました':'読み取り完了'}。誤字や読み順を確認し、修正後に「文章を反映」を押してください。`);
+    return true;
+  } catch(e) {status(`OCRに失敗しました: ${e.message}。再試行、または文章を貼り付けてください。`);return false;}
+  finally {if(worker)await worker.terminate().catch(()=>{});lock(false);}
+}
+$('ocr').onclick=async()=>{
+  if(busy||!bitmap)return;
+  if(!crop||crop.width<12||crop.height<12){status('本文を含む広さで範囲を選択してください。');return;}
+  const rect={...crop};
+  if(await recognize([rect])){regions=freshPage?[rect]:[...regions,rect];freshPage=false;}
 };
+// Loads a capture handed over by the background script.
+async function receive(key, continuing=false) {
+  const name='capture:'+key, payload=(await chrome.storage.session.get(name))[name];
+  await chrome.storage.session.remove(name);
+  if(!payload){status('取り込みデータの有効期間が終了しました。元のタブで拡張アイコンを押してください。');return false;}
+  if(payload.source){source=payload.source;$('nextPage').hidden=false;}
+  if(payload.image)await loadImage(await (await fetch(payload.image)).blob(),continuing);
+  if(payload.text)addText(payload.text,continuing);
+  if(payload.error||!payload.text)status(payload.error||(regions.length?'前回と同じ範囲を選択しています。必要なら囲み直して、OCRを実行してください。':'本文を囲んでOCRを実行してください。'));
+  return Boolean(payload.image);
+}
+$('nextPage').onclick=async()=>{
+  if(busy||!source)return;
+  lock(true);stop();status('次のページへ進めています…');
+  let result;
+  try{result=await chrome.runtime.sendMessage({type:'nextPage',...source,key:$('direction').value==='vertical'?'ArrowLeft':'ArrowRight'});}
+  catch(e){result={error:`次のページを取り込めませんでした: ${e.message}`};}
+  lock(false);
+  if(!result?.key){status(result?.error||'次のページを取り込めませんでした。');return;}
+  try{if(!await receive(result.key,true))return;}catch(e){status(`読み込みエラー: ${e.message}`);return;}
+  if(regions.length)await recognize(regions,true);
+  else status('次のページを取り込みました。本文を囲んでOCRを実行してください。');
+};
+chrome.runtime.onMessage.addListener((message,sender,sendResponse)=>{
+  if(message?.type!=='capture'||message.readerTabId!==tabId)return;
+  sendResponse(true);
+  if(busy){chrome.storage.session.remove('capture:'+message.key);status('処理中のため取り込みませんでした。終わってから、もう一度拡張アイコンを押してください。');return;}
+  receive(message.key,true).catch(e=>status(`読み込みエラー: ${e.message}`));
+});
 async function init(){
   try {
+    tabId=(await chrome.tabs.getCurrent())?.id;
     const {settings}=await chrome.storage.local.get('settings');
     if(settings){for(const id of ['speed','length','font','direction'])if(settings[id]!=null)$(id).value=settings[id];$('card').style.fontSize=$('font').value+'px';}
     const key=location.hash.slice(1);
-    if(key){
-      const name='capture:'+key, stored=await chrome.storage.session.get(name), payload=stored[name];
-      await chrome.storage.session.remove(name);history.replaceState(null,'',location.pathname);
-      if(payload){
-        if(payload.image)await loadImage(await (await fetch(payload.image)).blob());
-        if(payload.text){$('source').value=payload.text;apply();}
-        if(payload.error||!payload.text)status(payload.error||'本文を囲んでOCRを実行してください。');
-      }else status('取り込みデータの有効期間が終了しました。元のタブで拡張アイコンを押してください。');
-    }else status('文章を貼り付けるか、画像を開いてください。');
+    if(key){history.replaceState(null,'',location.pathname);await receive(key);}
+    else status('文章を貼り付けるか、画像を開いてください。');
   }catch(e){status(`読み込みエラー: ${e.message}`);}
   render();
 }
