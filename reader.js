@@ -1,4 +1,4 @@
-import {segmentJapanese, displayDelay, cropRect, normalizeOcrText} from './segment.mjs';
+import {segmentJapanese, displayDelay, cropRect, normalizeOcrText, mergeOcrText} from './segment.mjs';
 const $ = id => document.getElementById(id);
 let cards = [], index = 0, timer = null, playing = false;
 let bitmap = null, crop = null, anchor = null, busy = false;
@@ -76,7 +76,7 @@ $('ocr').onclick=async()=>{
   if(busy||!bitmap)return;
   if(!crop||crop.width<12||crop.height<12){status('本文を含む広さで範囲を選択してください。');return;}
   busy=true;stop();
-  const locked=['ocr','clear','imageFile','resetCrop','direction'];locked.forEach(id=>$(id).disabled=true);
+  const locked=['ocr','clear','imageFile','resetCrop','direction','append'];locked.forEach(id=>$(id).disabled=true);
   let worker;
   try {
     const area=document.createElement('canvas');area.width=Math.round(crop.width);area.height=Math.round(crop.height);
@@ -91,9 +91,10 @@ $('ocr').onclick=async()=>{
     });
     await worker.setParameters({tessedit_pageseg_mode:vertical?'5':'6',preserve_interword_spaces:'0'});
     const {data}=await worker.recognize(area);
-    $('source').value=normalizeOcrText(data.text);
-    apply();
-    status(data.text.trim()?'読み取り完了。誤字や読み順を確認し、修正後に「文章を反映」を押してください。':'文字を読み取れませんでした。範囲や組み方向を調整してください。');
+    const text=normalizeOcrText(data.text), appended=Boolean(text&&$('append').checked&&$('source').value.trim());
+    $('source').value=mergeOcrText($('source').value,text,$('append').checked);
+    if(text)apply();
+    status(text?`${appended?'読み取り結果を末尾に追記しました':'読み取り完了'}。誤字や読み順を確認し、修正後に「文章を反映」を押してください。`:'文字を読み取れませんでした。範囲や組み方向を調整してください。');
   } catch(e) {status(`OCRに失敗しました: ${e.message}。再試行、または文章を貼り付けてください。`);}
   finally {if(worker)await worker.terminate().catch(()=>{});busy=false;locked.forEach(id=>$(id).disabled=false);$('ocr').disabled=!bitmap;}
 };
@@ -108,7 +109,7 @@ async function init(){
       if(payload){
         if(payload.image)await loadImage(await (await fetch(payload.image)).blob());
         if(payload.text){$('source').value=payload.text;apply();}
-        else status(payload.error||'本文を囲んでOCRを実行してください。');
+        if(payload.error||!payload.text)status(payload.error||'本文を囲んでOCRを実行してください。');
       }else status('取り込みデータの有効期間が終了しました。元のタブで拡張アイコンを押してください。');
     }else status('文章を貼り付けるか、画像を開いてください。');
   }catch(e){status(`読み込みエラー: ${e.message}`);}

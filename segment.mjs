@@ -1,23 +1,30 @@
+const JA = String.raw`\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}ー、。！？「」『』（）`;
+const JA_GAP = new RegExp(`(?<=[${JA}])\\s+(?=[${JA}])`, 'gu');
+// Tesseract also pads half-width parentheses inside Japanese text with spaces.
+const OCR_GAP = new RegExp(`(?<=[${JA}()])[ \\t]+(?=[${JA}()])`, 'gu');
 export function segmentJapanese(text, maxLength = 12) {
   const max = Math.max(4, Math.min(40, Number(maxLength) || 12));
-  const clean = text.normalize('NFC').replace(/\s+/gu, ' ').trim();
   const words = new Intl.Segmenter('ja', {granularity:'word'});
   const chunks = [];
   let buffer = '';
   const push = () => { if (buffer.trim()) chunks.push(buffer.trim()); buffer = ''; };
-  for (const {segment:word} of words.segment(clean)) {
-    if (/^[、。，．！？!?：:；;」』）】〉》]+$/u.test(word)) {
-      if (buffer) buffer += word;
-      else if (chunks.length) chunks[chunks.length-1] += word;
-      else buffer += word;
-      if (/[。！？!?]/u.test(word)) push();
-      continue;
+  // A blank line ends a paragraph; other line breaks and spaces between Japanese characters are wrapping.
+  for (const paragraph of text.normalize('NFC').split(/\n\s*\n/u)) {
+    const clean = paragraph.replace(JA_GAP, '').replace(/\s+/gu, ' ').trim();
+    for (const {segment:word} of words.segment(clean)) {
+      if (/^[、。，．！？!?：:；;」』）】〉》]+$/u.test(word)) {
+        if (buffer) buffer += word;
+        else if (chunks.length) chunks[chunks.length-1] += word;
+        else buffer += word;
+        if (/[。！？!?]/u.test(word)) push();
+        continue;
+      }
+      if ([...buffer+word].length > max && buffer.trim()) push();
+      buffer += word;
+      if ([...buffer].length >= Math.floor(max * .6) && /^(は|が|を|に|で|と|へ|から|まで|より|ので|のに)$/u.test(word)) push();
     }
-    if ([...buffer+word].length > max && buffer.trim()) push();
-    buffer += word;
-    if ([...buffer].length >= Math.floor(max * .6) && /^(は|が|を|に|で|と|へ|から|まで|より|ので|のに)$/u.test(word)) push();
+    push();
   }
-  push();
   return chunks;
 }
 export function displayDelay(text, cpm = 600) {
@@ -31,5 +38,11 @@ export function cropRect(start, end, width, height) {
 }
 
 export function normalizeOcrText(text) {
-  return text.replace(/(?<=[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}、。！？「」『』（）])[ \t]+(?=[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}、。！？「」『』（）])/gu, '').trim();
+  return text.replace(OCR_GAP, '').trim();
+}
+
+export function mergeOcrText(current, addition, append = true) {
+  const text = addition.trim();
+  if (!text) return current;
+  return append && current.trim() ? current.trimEnd() + '\n' + text : text;
 }
